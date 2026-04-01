@@ -1,0 +1,569 @@
+/*
+  ============================================================
+  Chiu — OLED Edition
+  ============================================================
+  Hardware : ESP32 Dev Module (30-pin) + SSD1306 I2C OLED
+  Display  : 128x64 (change SCREEN_HEIGHT to 32 if yours is 128x32)
+  Wiring   :
+    OLED GND  -> ESP32 GND
+    OLED VCC  -> ESP32 3V3
+    OLED SCL  -> ESP32 GPIO 22
+    OLED SDA  -> ESP32 GPIO 21
+
+  Libraries needed:
+    - Adafruit SSD1306
+    - Adafruit GFX Library
+  ============================================================
+*/
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+#define SCREEN_WIDTH  128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+#define OLED_ADDR     0x3C
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+const char* AP_SSID = "Madhura1019";
+const char* AP_PASS = "kene1910";
+WebServer   server(80);
+
+enum Mode { MODE_EYES, MODE_SQUISH, MODE_CLOCK, MODE_STOPWATCH, MODE_CANVAS,
+            MODE_ROUND, MODE_STAR, MODE_ANGRY, MODE_DIZZY, MODE_HEART };
+Mode    currentMode  = MODE_EYES;
+int     animSpeed    = 80;
+bool    displayOn    = true;
+
+uint8_t canvas[SCREEN_WIDTH][SCREEN_HEIGHT / 8];
+
+#define EYE_W   14
+#define EYE_H   22
+#define EYE_GAP 38
+#define EYE_OY   8
+
+bool squishOpen = true;
+
+unsigned long lastBlink     = 0;
+unsigned long blinkInterval = 3000;
+bool          blinking      = false;
+int           blinkFrame    = 0;
+
+int           wiggleOx  = 0;
+int           wiggleDir = 1;
+unsigned long lastWiggle = 0;
+
+// IST Clock
+int           clockH = 5, clockM = 30, clockS = 0;
+unsigned long clockSetAt = 0;
+
+// Stopwatch
+unsigned long swStartMs = 0;
+unsigned long swElapsed = 0;
+bool          swRunning = false;
+
+// ── Helpers ──────────────────────────────────────────────
+
+void drawEye(int cx, int cy, int w, int h) {
+  int x = cx - w / 2;
+  int y = cy - h / 2;
+  display.fillRect(x, y, w, h, SSD1306_WHITE);
+  display.fillRect(x + 2, y + 2, 2, 2, SSD1306_BLACK);
+}
+
+// ── Renderers ────────────────────────────────────────────
+
+void renderEyes() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy  = SCREEN_HEIGHT / 2 - EYE_OY;
+  int lcx = SCREEN_WIDTH / 2 - EYE_GAP / 2 + wiggleOx;
+  int rcx = SCREEN_WIDTH / 2 + EYE_GAP / 2 + wiggleOx;
+  int h   = blinking ? max(1, EYE_H - blinkFrame * 5) : EYE_H;
+  drawEye(lcx, cy, EYE_W, h);
+  drawEye(rcx, cy, EYE_W, h);
+  display.display();
+}
+
+void renderSquish() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy  = SCREEN_HEIGHT / 2 - EYE_OY;
+  int lcx = SCREEN_WIDTH / 2 - EYE_GAP / 2;
+  int rcx = SCREEN_WIDTH / 2 + EYE_GAP / 2;
+  if (squishOpen) {
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(lcx - 10, cy - 8); display.print(">");
+    display.setCursor(rcx - 4,  cy - 8); display.print("<");
+  } else {
+    display.drawFastHLine(lcx - EYE_W/2, cy, EYE_W, SSD1306_WHITE);
+    display.drawFastHLine(rcx - EYE_W/2, cy, EYE_W, SSD1306_WHITE);
+  }
+  display.display();
+}
+
+void renderRound() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy  = SCREEN_HEIGHT / 2 - EYE_OY;
+  int lcx = SCREEN_WIDTH / 2 - EYE_GAP / 2;
+  int rcx = SCREEN_WIDTH / 2 + EYE_GAP / 2;
+  int r   = blinking ? max(1, 9 - blinkFrame * 2) : 9;
+  display.fillCircle(lcx, cy, r, SSD1306_WHITE);
+  display.fillCircle(lcx + 3, cy - 3, 2, SSD1306_BLACK);
+  display.fillCircle(rcx, cy, r, SSD1306_WHITE);
+  display.fillCircle(rcx + 3, cy - 3, 2, SSD1306_BLACK);
+  display.display();
+}
+
+void renderAngry() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy  = SCREEN_HEIGHT / 2 - EYE_OY;
+  int lcx = SCREEN_WIDTH / 2 - EYE_GAP / 2;
+  int rcx = SCREEN_WIDTH / 2 + EYE_GAP / 2;
+  display.fillRect(lcx - 7, cy - 8, 14, 16, SSD1306_WHITE);
+  display.fillRect(rcx - 7, cy - 8, 14, 16, SSD1306_WHITE);
+  display.drawLine(lcx - 8, cy - 12, lcx + 8, cy - 16, SSD1306_WHITE);
+  display.drawLine(rcx - 8, cy - 16, rcx + 8, cy - 12, SSD1306_WHITE);
+  display.display();
+}
+
+void renderDizzy() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy  = SCREEN_HEIGHT / 2 - EYE_OY;
+  int lcx = SCREEN_WIDTH / 2 - EYE_GAP / 2;
+  int rcx = SCREEN_WIDTH / 2 + EYE_GAP / 2;
+  int s   = 7;
+  display.drawLine(lcx-s, cy-s, lcx+s, cy+s, SSD1306_WHITE);
+  display.drawLine(lcx+s, cy-s, lcx-s, cy+s, SSD1306_WHITE);
+  display.drawLine(rcx-s, cy-s, rcx+s, cy+s, SSD1306_WHITE);
+  display.drawLine(rcx+s, cy-s, rcx-s, cy+s, SSD1306_WHITE);
+  display.display();
+}
+
+void renderHeart() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy      = SCREEN_HEIGHT / 2 - EYE_OY;
+  int centers[2] = { SCREEN_WIDTH/2 - EYE_GAP/2, SCREEN_WIDTH/2 + EYE_GAP/2 };
+  for (int i = 0; i < 2; i++) {
+    int cx = centers[i];
+    display.fillCircle(cx - 4, cy - 3, 4, SSD1306_WHITE);
+    display.fillCircle(cx + 4, cy - 3, 4, SSD1306_WHITE);
+    for (int j = 0; j <= 8; j++)
+      display.drawFastHLine(cx - 8 + j/2, cy - 1 + j, 16 - j, SSD1306_WHITE);
+  }
+  display.display();
+}
+
+void renderStar() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  int cy      = SCREEN_HEIGHT / 2 - EYE_OY;
+  int centers[2] = { SCREEN_WIDTH/2 - EYE_GAP/2, SCREEN_WIDTH/2 + EYE_GAP/2 };
+  for (int i = 0; i < 2; i++) {
+    int cx = centers[i];
+    int s  = 9;
+    display.drawFastHLine(cx - s, cy, s*2+1, SSD1306_WHITE);
+    display.drawFastVLine(cx, cy - s, s*2+1, SSD1306_WHITE);
+    display.drawLine(cx-6, cy-6, cx+6, cy+6, SSD1306_WHITE);
+    display.drawLine(cx+6, cy-6, cx-6, cy+6, SSD1306_WHITE);
+    display.fillCircle(cx, cy, 2, SSD1306_WHITE);
+  }
+  display.display();
+}
+
+void renderClock() {
+  if (!displayOn) return;
+  display.clearDisplay();
+
+  unsigned long elapsed = (millis() - clockSetAt) / 1000UL;
+  int totalS = clockS + (int)(elapsed % 60);
+  int totalM = clockM + (int)((elapsed / 60) % 60) + (totalS / 60);
+  int totalH = clockH + (int)(elapsed / 3600) + (totalM / 60);
+  totalS %= 60; totalM %= 60; totalH %= 24;
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(34, 2);
+  display.print("IST CLOCK");
+  display.drawFastHLine(0, 12, 128, SSD1306_WHITE);
+
+  display.setTextSize(3);
+  char buf[6];
+  sprintf(buf, "%02d:%02d", totalH, totalM);
+  display.setCursor(8, 18);
+  display.print(buf);
+
+  display.setTextSize(2);
+  char sbuf[3];
+  sprintf(sbuf, "%02d", totalS);
+  display.setCursor(50, 46);
+  display.print(sbuf);
+
+  if ((millis() / 500) % 2 == 0) {
+    display.setCursor(38, 46);
+    display.print(":");
+  }
+  display.display();
+}
+
+void renderStopwatch() {
+  if (!displayOn) return;
+  display.clearDisplay();
+
+  unsigned long ms     = swRunning ? (swElapsed + millis() - swStartMs) : swElapsed;
+  unsigned long totalS = ms / 1000UL;
+  unsigned long cents  = (ms % 1000) / 10;
+  int sw_m = (int)(totalS / 60);
+  int sw_s = (int)(totalS % 60);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(30, 2);
+  display.print("STOPWATCH");
+  display.drawFastHLine(0, 12, 128, SSD1306_WHITE);
+
+  display.setTextSize(3);
+  char buf[6];
+  sprintf(buf, "%02d:%02d", sw_m, sw_s);
+  display.setCursor(8, 18);
+  display.print(buf);
+
+  display.setTextSize(2);
+  char cbuf[3];
+  sprintf(cbuf, "%02lu", cents);
+  display.setCursor(50, 46);
+  display.print(cbuf);
+
+  display.setTextSize(1);
+  display.setCursor(2, 56);
+  display.print(swRunning ? ">> RUNNING" : "|| STOPPED");
+  display.display();
+}
+
+void renderCanvas() {
+  if (!displayOn) return;
+  display.clearDisplay();
+  for (int x = 0; x < SCREEN_WIDTH; x++)
+    for (int yb = 0; yb < SCREEN_HEIGHT / 8; yb++) {
+      uint8_t b = canvas[x][yb];
+      for (int bit = 0; bit < 8; bit++)
+        if (b & (1 << bit))
+          display.drawPixel(x, yb * 8 + bit, SSD1306_WHITE);
+    }
+  display.display();
+}
+
+// ── Animation tick ────────────────────────────────────────
+
+void tickAnimations() {
+  unsigned long now = millis();
+
+  if (currentMode == MODE_EYES) {
+    if (now - lastWiggle > (unsigned long)animSpeed) {
+      wiggleOx += wiggleDir;
+      if (abs(wiggleOx) >= 3) wiggleDir = -wiggleDir;
+      lastWiggle = now;
+    }
+    if (!blinking && now - lastBlink > blinkInterval) {
+      blinking = true; blinkFrame = 0;
+      blinkInterval = random(2000, 5000);
+    }
+    if (blinking) { blinkFrame++; if (blinkFrame > 6) { blinking=false; blinkFrame=0; lastBlink=now; } }
+    renderEyes();
+  }
+  else if (currentMode == MODE_SQUISH) {
+    if (now - lastWiggle > 300) { squishOpen = !squishOpen; lastWiggle = now; }
+    renderSquish();
+  }
+  else if (currentMode == MODE_CLOCK)     { renderClock(); }
+  else if (currentMode == MODE_STOPWATCH) { renderStopwatch(); }
+  else if (currentMode == MODE_CANVAS)    { renderCanvas(); }
+  else if (currentMode == MODE_ROUND) {
+    if (!blinking && now - lastBlink > blinkInterval) {
+      blinking = true; blinkFrame = 0;
+      blinkInterval = random(2000, 5000);
+    }
+    if (blinking) { blinkFrame++; if (blinkFrame > 5) { blinking=false; blinkFrame=0; lastBlink=now; } }
+    renderRound();
+  }
+  else if (currentMode == MODE_ANGRY) { renderAngry(); }
+  else if (currentMode == MODE_DIZZY) { renderDizzy(); }
+  else if (currentMode == MODE_HEART) { renderHeart(); }
+  else if (currentMode == MODE_STAR)  { renderStar();  }
+}
+
+// ── Web page ──────────────────────────────────────────────
+
+const char PAGE[] PROGMEM = R"rawhtml(
+<!DOCTYPE html><html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chiu</title>
+<style>
+  body{background:#0a0f1e;color:#eee;font-family:monospace;text-align:center;padding:20px}
+  h1{color:#4af;font-size:1.4em;margin-bottom:4px}
+  p{color:#7ab;font-size:.8em;margin-bottom:16px}
+  .btn{display:inline-block;margin:5px;padding:11px 16px;background:#0d1a2e;border:1px solid #4af;
+       color:#4af;border-radius:8px;font-size:.9em;cursor:pointer;text-decoration:none;min-width:110px}
+  .btn:active{background:#4af;color:#0a0f1e}
+  .section{margin:14px 0}
+  .section-title{font-size:.75em;color:#7ab;margin-bottom:6px;letter-spacing:1px;text-transform:uppercase}
+  label{font-size:.85em;color:#7ab}
+  input[type=range]{width:80%;accent-color:#4af}
+  input[type=number]{width:50px;background:#0d1a2e;color:#4af;border:1px solid #4af;border-radius:4px;text-align:center;padding:4px}
+  canvas{border:1px solid #4af;cursor:crosshair;touch-action:none;margin-top:10px}
+  #canvasControls,#clockControls,#swControls{display:none}
+  .row{display:flex;justify-content:center;flex-wrap:wrap;gap:5px}
+  hr{border:none;border-top:1px solid #1a2a40;margin:14px 0}
+</style>
+</head>
+<body>
+<h1> Chiu </h1>
+<p>OLED Edition — ESP32 Controller</p>
+
+<div class="section-title">Eye Styles</div>
+<div class="row">
+  <a class="btn" href="/mode?v=eyes">Normal</a>
+  <a class="btn" href="/mode?v=squish">Squish</a>
+  <a class="btn" href="/mode?v=round">Round</a>
+  <a class="btn" href="/mode?v=angry">Sad</a>
+  <a class="btn" href="/mode?v=dizzy">Dizzy</a>
+  <a class="btn" href="/mode?v=heart">Heart</a>
+  <a class="btn" href="/mode?v=star">Freky</a>
+</div>
+
+<hr>
+<div class="section-title">Other Modes</div>
+<div class="row">
+  <a class="btn" href="/mode?v=clock"> Clock</a>
+  <a class="btn" href="/mode?v=stopwatch"> Stopwatch</a>
+  <a class="btn" href="/mode?v=canvas"> Canvas</a>
+</div>
+
+<div id="clockControls">
+  <hr>
+  <div class="section-title">Set IST Time</div>
+  <div class="section">
+    H: <input id="ch" type="number" min="0" max="23" value="12">
+    M: <input id="cm" type="number" min="0" max="59" value="0">
+    S: <input id="cs" type="number" min="0" max="59" value="0">
+    <br><br>
+    <a class="btn" onclick="setClockNow()">Set Time</a>
+    <a class="btn" onclick="syncBrowser()">Sync Browser</a>
+  </div>
+</div>
+
+<div id="swControls">
+  <hr>
+  <div class="section-title">Stopwatch</div>
+  <div class="section row">
+    <a class="btn" href="/sw?v=start"> Start</a>
+    <a class="btn" href="/sw?v=stop">Stop</a>
+    <a class="btn" href="/sw?v=reset">Reset</a>
+  </div>
+</div>
+
+<hr>
+<div class="section">
+  <label>Speed: <span id="spLbl">normal</span></label><br>
+  <input type="range" id="spSlider" min="20" max="300" value="80" oninput="setSpeed(this.value)">
+</div>
+
+<div class="section">
+  <a class="btn" href="/display?v=toggle">Display On/Off</a>
+  <a class="btn" href="/clear">Clear Canvas</a>
+</div>
+
+<div id="canvasControls">
+  <hr>
+  <canvas id="cv" width="128" height="64" style="width:256px;height:128px"></canvas><br>
+  <a class="btn" href="/mode?v=eyes">Done</a>
+</div>
+
+<script>
+function setSpeed(v){
+  document.getElementById('spLbl').textContent=v<60?'fast':v>150?'slow':'normal';
+  fetch('/speed?v='+v);
+}
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d');
+let drawing=false;
+ctx.fillStyle='black';ctx.fillRect(0,0,128,64);
+function pos(e){
+  const r=cv.getBoundingClientRect();
+  const sx=128/r.width,sy=64/r.height;
+  const cx=e.touches?e.touches[0].clientX:e.clientX;
+  const cy=e.touches?e.touches[0].clientY:e.clientY;
+  return{x:Math.floor((cx-r.left)*sx),y:Math.floor((cy-r.top)*sy)};
+}
+function drawPx(p){ctx.fillStyle='white';ctx.fillRect(p.x,p.y,1,1);fetch('/pixel?x='+p.x+'&y='+p.y);}
+cv.addEventListener('mousedown',e=>{drawing=true;drawPx(pos(e));});
+cv.addEventListener('mousemove',e=>{if(drawing)drawPx(pos(e));});
+cv.addEventListener('mouseup',()=>drawing=false);
+cv.addEventListener('touchstart',e=>{e.preventDefault();drawing=true;drawPx(pos(e));},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();if(drawing)drawPx(pos(e));},{passive:false});
+cv.addEventListener('touchend',()=>drawing=false);
+function setClockNow(){
+  fetch('/setclock?h='+document.getElementById('ch').value
+    +'&m='+document.getElementById('cm').value
+    +'&s='+document.getElementById('cs').value);
+}
+function syncBrowser(){
+  const now=new Date();
+  const ist=new Date(now.getTime()+now.getTimezoneOffset()*60000+19800000);
+  document.getElementById('ch').value=ist.getHours();
+  document.getElementById('cm').value=ist.getMinutes();
+  document.getElementById('cs').value=ist.getSeconds();
+  setClockNow();
+}
+function checkMode(){
+  fetch('/state').then(r=>r.json()).then(d=>{
+    document.getElementById('canvasControls').style.display = d.mode==='canvas'    ?'block':'none';
+    document.getElementById('clockControls').style.display  = d.mode==='clock'     ?'block':'none';
+    document.getElementById('swControls').style.display     = d.mode==='stopwatch' ?'block':'none';
+  });
+}
+setInterval(checkMode,1000);
+checkMode();
+</script>
+</body></html>
+)rawhtml";
+
+// ── Route handlers ────────────────────────────────────────
+
+void handleRoot()  { server.send_P(200, "text/html", PAGE); }
+
+void handleMode() {
+  if (server.hasArg("v")) {
+    String v = server.arg("v");
+    if      (v=="eyes")      { currentMode=MODE_EYES;      wiggleOx=0; }
+    else if (v=="squish")    { currentMode=MODE_SQUISH;    squishOpen=true; }
+    else if (v=="round")     { currentMode=MODE_ROUND; }
+    else if (v=="angry")     { currentMode=MODE_ANGRY; }
+    else if (v=="dizzy")     { currentMode=MODE_DIZZY; }
+    else if (v=="heart")     { currentMode=MODE_HEART; }
+    else if (v=="star")      { currentMode=MODE_STAR; }
+    else if (v=="clock")     { currentMode=MODE_CLOCK; }
+    else if (v=="stopwatch") { currentMode=MODE_STOPWATCH; }
+    else if (v=="canvas")    { currentMode=MODE_CANVAS; }
+  }
+  server.sendHeader("Location","/"); server.send(302);
+}
+
+void handleSpeed() {
+  if (server.hasArg("v")) animSpeed = constrain(server.arg("v").toInt(), 20, 300);
+  server.send(200,"text/plain","ok");
+}
+
+void handleDisplay() {
+  if (server.hasArg("v") && server.arg("v")=="toggle") {
+    displayOn = !displayOn;
+    if (!displayOn) { display.clearDisplay(); display.display(); }
+  }
+  server.sendHeader("Location","/"); server.send(302);
+}
+
+void handlePixel() {
+  if (server.hasArg("x") && server.hasArg("y")) {
+    int px = constrain(server.arg("x").toInt(), 0, SCREEN_WIDTH-1);
+    int py = constrain(server.arg("y").toInt(), 0, SCREEN_HEIGHT-1);
+    canvas[px][py/8] |= (1 << (py%8));
+    if (currentMode==MODE_CANVAS) renderCanvas();
+  }
+  server.send(200,"text/plain","ok");
+}
+
+void handleClear() {
+  memset(canvas, 0, sizeof(canvas));
+  if (currentMode==MODE_CANVAS) renderCanvas();
+  server.sendHeader("Location","/"); server.send(302);
+}
+
+void handleState() {
+  String m="eyes";
+  if      (currentMode==MODE_SQUISH)    m="squish";
+  else if (currentMode==MODE_ROUND)     m="round";
+  else if (currentMode==MODE_ANGRY)     m="angry";
+  else if (currentMode==MODE_DIZZY)     m="dizzy";
+  else if (currentMode==MODE_HEART)     m="heart";
+  else if (currentMode==MODE_STAR)      m="star";
+  else if (currentMode==MODE_CLOCK)     m="clock";
+  else if (currentMode==MODE_STOPWATCH) m="stopwatch";
+  else if (currentMode==MODE_CANVAS)    m="canvas";
+  server.send(200,"application/json","{\"mode\":\""+m+"\"}");
+}
+
+void handleSetClock() {
+  if (server.hasArg("h")) clockH = constrain(server.arg("h").toInt(), 0, 23);
+  if (server.hasArg("m")) clockM = constrain(server.arg("m").toInt(), 0, 59);
+  if (server.hasArg("s")) clockS = constrain(server.arg("s").toInt(), 0, 59);
+  clockSetAt = millis();
+  server.send(200,"text/plain","ok");
+}
+
+void handleStopwatch() {
+  if (server.hasArg("v")) {
+    String v = server.arg("v");
+    if      (v=="start" && !swRunning) { swRunning=true; swStartMs=millis(); }
+    else if (v=="stop"  &&  swRunning) { swElapsed+=millis()-swStartMs; swRunning=false; }
+    else if (v=="reset")               { swRunning=false; swElapsed=0; swStartMs=0; }
+  }
+  server.sendHeader("Location","/"); server.send(302);
+}
+
+// ── Setup & Loop ──────────────────────────────────────────
+
+void setup() {
+  Serial.begin(115200);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("SSD1306 not found — try 0x3D");
+    for (;;) delay(1000);
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(44, 10); display.print("Chiu");
+  display.setCursor(28, 22); display.print("OLED Edition");
+  display.display();
+  delay(1500);
+
+  WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
+
+  server.on("/",         handleRoot);
+  server.on("/mode",     handleMode);
+  server.on("/speed",    handleSpeed);
+  server.on("/display",  handleDisplay);
+  server.on("/pixel",    handlePixel);
+  server.on("/clear",    handleClear);
+  server.on("/state",    handleState);
+  server.on("/setclock", handleSetClock);
+  server.on("/sw",       handleStopwatch);
+  server.begin();
+
+  display.clearDisplay();
+  display.setCursor(0,  0); display.print("WiFi: Madhura1019");
+  display.setCursor(0, 12); display.print("Pass: kene1910");
+  display.setCursor(0, 24); display.print("http://192.168.4.1");
+  display.display();
+  delay(2500);
+
+  clockSetAt = millis();
+  randomSeed(analogRead(0));
+}
+
+void loop() {
+  server.handleClient();
+  tickAnimations();
+  delay(16);
+}
