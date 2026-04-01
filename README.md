@@ -1,2 +1,2 @@
 # desk-bot
-ESP32 OLED face controller
+ESP32 OLED desk bot
