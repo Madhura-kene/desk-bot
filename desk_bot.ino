@@ -336,10 +336,10 @@ const char PAGE[] PROGMEM = R"rawhtml(
   <a class="btn" href="/mode?v=eyes">Normal</a>
   <a class="btn" href="/mode?v=squish">Squish</a>
   <a class="btn" href="/mode?v=round">Round</a>
-  <a class="btn" href="/mode?v=angry">Sad</a>
+  <a class="btn" href="/mode?v=angry">Angry</a>
   <a class="btn" href="/mode?v=dizzy">Dizzy</a>
   <a class="btn" href="/mode?v=heart">Heart</a>
-  <a class="btn" href="/mode?v=star">Freky</a>
+  <a class="btn" href="/mode?v=star">Star</a>
 </div>
 
 <hr>
