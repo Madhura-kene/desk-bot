@@ -1,4 +1,4 @@
-# desk_bot — Chiu OLED Edition
+# desk_bot — chi's OLED Edition
 
 ESP32-based animated OLED controller with a WiFi web interface.
 
